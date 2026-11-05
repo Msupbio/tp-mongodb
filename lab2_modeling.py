@@ -1,62 +1,51 @@
-# Lab 2 « NoSQL Modeling » : users, posts, comments, likes
-# Choix de modèle : les commentaires et les likes sont IMBRIQUÉS dans chaque post
-# (on les lit toujours avec le post) ; les users restent une collection à part (référence par _id).
-from pprint import pprint
-from connexion import get_client
+import os
+from pymongo import MongoClient
 
-db = get_client()["social"]
-db.users.drop(); db.posts.drop()
+db = MongoClient(os.environ["MONGODB_URI"])["social"]
 
-# 1) at least 3 users
-ids = db.users.insert_many([
-    {"username": "alice", "email": "alice@example.com"},
-    {"username": "bob",   "email": "bob@example.com"},
-    {"username": "chloe", "email": "chloe@example.com"},
+# Users
+alice, bob, chloe = db.users.insert_many([
+    {"username": "alice"},
+    {"username": "bob"},
+    {"username": "chloe"},
 ]).inserted_ids
-alice, bob, chloe = ids
 
-# 2) at least 5 posts (author = référence vers users._id)
+# Posts (comments and likes embedded in each post)
 db.posts.insert_many([
-    {"author_id": alice, "title": "Hello MongoDB", "content": "My first post", "comments": [], "likes": []},
-    {"author_id": alice, "title": "NoSQL vs SQL",  "content": "Documents vs tables", "comments": [], "likes": []},
-    {"author_id": bob,   "title": "Python tips",   "content": "Use pymongo", "comments": [], "likes": []},
-    {"author_id": chloe, "title": "Atlas cluster", "content": "Free tier M0", "comments": [], "likes": []},
-    {"author_id": bob,   "title": "Indexes",       "content": "Speed up queries", "comments": [], "likes": []},
+    {"author_id": alice, "title": "Hello MongoDB", "comments": [], "likes": []},
+    {"author_id": alice, "title": "NoSQL vs SQL", "comments": [], "likes": []},
+    {"author_id": bob, "title": "Python tips", "comments": [], "likes": []},
+    {"author_id": chloe, "title": "Atlas cluster", "comments": [], "likes": []},
+    {"author_id": bob, "title": "Indexes", "comments": [], "likes": []},
 ])
 
-# 3) comments on some posts — $push ajoute un élément au tableau
+# Comments
 db.posts.update_one({"title": "Hello MongoDB"}, {"$push": {"comments": {"user_id": bob, "text": "Welcome!"}}})
 db.posts.update_one({"title": "Hello MongoDB"}, {"$push": {"comments": {"user_id": chloe, "text": "Nice post"}}})
-db.posts.update_one({"title": "Python tips"},   {"$push": {"comments": {"user_id": alice, "text": "Thanks!"}}})
+db.posts.update_one({"title": "Python tips"}, {"$push": {"comments": {"user_id": alice, "text": "Thanks!"}}})
 
-# 4) likes — $addToSet ajoute seulement si absent (un user ne like qu'une fois)
-for title, users in {"Hello MongoDB": [bob, chloe], "Python tips": [alice, chloe, bob], "Indexes": [alice]}.items():
-    for u in users:
-        db.posts.update_one({"title": title}, {"$addToSet": {"likes": u}})
+# Likes
+db.posts.update_one({"title": "Hello MongoDB"}, {"$addToSet": {"likes": {"$each": [bob, chloe]}}})
+db.posts.update_one({"title": "Python tips"}, {"$addToSet": {"likes": {"$each": [alice, bob, chloe]}}})
+db.posts.update_one({"title": "Indexes"}, {"$addToSet": {"likes": alice}})
 
-print("\n1) All posts")
-for p in db.posts.find({}, {"title": 1, "_id": 0}):           # projection : seulement le titre
-    print(" -", p["title"])
+# 1. All posts
+print(list(db.posts.find()))
 
-print("\n2) Posts of user 'alice'")
-for p in db.posts.find({"author_id": alice}, {"title": 1, "_id": 0}):
-    print(" -", p["title"])
+# 2. A user's posts
+print(list(db.posts.find({"author_id": alice})))
 
-print("\n3) Comments on 'Hello MongoDB'")
-pprint(db.posts.find_one({"title": "Hello MongoDB"}, {"comments": 1, "_id": 0})["comments"])
+# 3. Comments on a post
+print(db.posts.find_one({"title": "Hello MongoDB"}, {"comments": 1, "_id": 0}))
 
-print("\n4) Post with the most likes")   # $size = longueur du tableau ; tri décroissant ; 1er résultat
-top = list(db.posts.aggregate([
+# 4. Post with the most likes
+print(list(db.posts.aggregate([
     {"$project": {"title": 1, "nb_likes": {"$size": "$likes"}}},
     {"$sort": {"nb_likes": -1}},
     {"$limit": 1},
-]))
-pprint(top)
+])))
 
-print("\n5) Number of posts per user")   # $group = GROUP BY ; $lookup = jointure vers users
-pprint(list(db.posts.aggregate([
+# 5. Number of posts per user
+print(list(db.posts.aggregate([
     {"$group": {"_id": "$author_id", "nb_posts": {"$sum": 1}}},
-    {"$lookup": {"from": "users", "localField": "_id", "foreignField": "_id", "as": "user"}},
-    {"$project": {"_id": 0, "username": {"$arrayElemAt": ["$user.username", 0]}, "nb_posts": 1}},
-    {"$sort": {"nb_posts": -1}},
 ])))
